@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Service CloudFormation Template
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "10.0.0.0/16"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: ap-south-1a
+      CidrBlock: "10.0.0.0/24"
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: ap-south-1b
+      CidrBlock: "10.0.1.0/24"
+
+  NginxSecurityGroup5:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group allowing incoming traffic from anywhere (IPv4 and IPv6)
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0  # Allow incoming IPv4 traffic from anywhere
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIpv6: ::/0  # Allow incoming IPv6 traffic from anywhere
+
+  NginxSecurityGroup51:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group 2
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !GetAtt NginxSecurityGroup5.GroupId
+
+  NginxSecurityGroup1:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access to Nginx instances12
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 10.0.1.0/16
+  # Create an ECS cluster
+  MyECSCluster:
+    Type: AWS::ECS::Cluster
+
+  # Define a task definition for your container
+  MyECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: my-ecs-app
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - EC2
+      ContainerDefinitions:
+        - Name: my-ecs-container
+          Image: nginxdemos/hello:latest
+          PortMappings:
+            - ContainerPort: 80
+          Memory: 1024
+          Cpu: 256  # Specify .5 vCPU (half a vCPU) as 256 CPU units
+
+  # Create an Application Load Balancer
+  MyALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: my-alb
+      Subnets:
+        - !Ref SubnetA
+        - !Ref SubnetB
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Tags:
+        - Key: Name
+          Value: my-alb
+
+  # Create a target group for the ECS service
+  MyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: my-target-group
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref Vpc
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+
+  MyListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            ContentType: text/plain
+            StatusCode: 200
+      LoadBalancerArn: !Ref MyALB
+      Port: 80
+      Protocol: HTTP
+
+  MyListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref MyTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /*
+      ListenerArn: !Ref MyListener
+      Priority: 1  # Specify the priority value as needed
+
+
+  # Create an ECS service
+  MyECSService:
+    Type: AWS::ECS::Service
+    DependsOn: MyListener   
+    Properties:
+      Cluster: !Ref MyECSCluster
+      LaunchType: EC2
+      TaskDefinition: !Ref MyECSTaskDefinition
+      DesiredCount: '2'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref SubnetA
+            - !Ref SubnetB
+          SecurityGroups:
+            - !Ref NginxSecurityGroup5
+      LoadBalancers:
+        - ContainerName: my-ecs-container
+          ContainerPort: 80
+          TargetGroupArn: !Ref MyTargetGroup
+
